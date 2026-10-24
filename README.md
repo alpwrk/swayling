@@ -32,8 +32,13 @@ layout.
 ```sh
 git clone https://github.com/alpwrk/swayling.git
 cd swayling
-./install.sh --dry-run   # optional: preview the changes to your sway config
 ./install.sh
+```
+
+Want to see what it would change in your sway config first?
+
+```sh
+./install.sh --dry-run
 ```
 
 That's it: the script checks for Rust, builds swayling, installs it, wires it
