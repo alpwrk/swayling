@@ -35,16 +35,16 @@ cd swayling
 ./install.sh
 ```
 
+That's it: the script checks for Rust, builds swayling, installs it, wires it
+into your sway config and reloads sway (this does not log you out). Open a
+few terminals on an empty workspace and watch them form a spiral. See
+[The install script](#the-install-script) for details.
+
 Want to see what it would change in your sway config first?
 
 ```sh
 ./install.sh --dry-run
 ```
-
-That's it: the script checks for Rust, builds swayling, installs it, wires it
-into your sway config and reloads sway (this does not log you out). Open a
-few terminals on an empty workspace and watch them form a spiral. See
-[The install script](#the-install-script) for details.
 
 ## Usage
 
