@@ -25,7 +25,7 @@ layout.
 - **No patches, no init system required**: only ordinary sway IPC commands.
   Works with any sway or SwayFX version (tested on SwayFX 0.6 / sway 1.12),
   with or without systemd
-- **One-command install** that detects your config and autostart method
+- **One-command install** that detects your config and wires everything up
 
 ## Quick start
 
@@ -55,8 +55,8 @@ swayling [--ratio RATIO] [--workspaces LIST] [--verbose]
 ```
 
 Runs in the background and prepares the split direction of whatever window
-is focused. It is normally started by your sway config or a systemd user
-service (the install script sets this up). Run it by hand with `--verbose`
+is focused. It is normally started by `exec_always` in your sway config (the
+install script sets this up). Run it by hand with `--verbose`
 to watch its decisions.
 
 | Option | Default | Description |
@@ -137,14 +137,15 @@ it can't undo:
      commands such as `move left 20px` or `move container to workspace`
      are left alone.
    - A marked block at the end binds `swayling retile` to `$mod+Shift+t`
-     (skipped with a warning if that key is already taken) and, unless a
-     systemd service is used, starts the daemon.
+     (skipped with a warning if that key is already taken) and starts the
+     daemon with `exec_always` (see [Autostart](#autostart)).
    - A hand-written `exec swayling` line is replaced by the managed one, so
      the daemon never runs twice.
 6. **Writes a backup** (`config.bak-YYYYMMDD_HHMMSS`), checks the new config
    with `sway --validate` and only then replaces yours. If validation fails,
    your config is not touched.
-7. **Sets up autostart** (see below).
+7. **Removes an old systemd service** that earlier versions of the script
+   may have set up, so the daemon never runs twice.
 8. **Reloads sway** if it is running, so the bindings and the daemon are
    active right away, and checks that the daemon really runs. Then it
    celebrates.
@@ -154,17 +155,18 @@ configs (dotfile managers) keep their symlink.
 
 ### Autostart
 
-The script picks the autostart method from how your session is started:
+The daemon is always started by sway itself, with this line in the managed
+block:
 
-| Your setup | Method |
-| --- | --- |
-| sway runs in a systemd graphical session (uwsm, sway-systemd, ...): `graphical-session.target` or `sway-session.target` is active and `SWAYSOCK` is exported to systemd | systemd user service `~/.config/systemd/user/swayling.service`, enabled for that target |
-| everything else: no systemd at all (OpenRC, runit, s6, dinit, ... on Artix, Void, Gentoo, Alpine), or systemd but sway started by a display manager such as ly, greetd or SDDM, or from a tty | `exec_always` in the sway config |
+```
+exec_always "pkill -x swayling; exec ~/.local/bin/swayling"
+```
 
-`exec_always` works on every system, because sway itself starts swayling, so
-it comes and goes with your sway session. Force a method with
-`--autostart sway` or `--autostart systemd`. Switching methods removes the
-old one, so the daemon is never started twice.
+So it runs exactly as long as your sway session does, and it always sees the
+right `SWAYSOCK`. This works the same everywhere: with or without systemd
+(OpenRC, runit, s6, dinit, ...), with uwsm, a display manager or a tty. On
+every reload the old daemon is replaced, so new options and a freshly
+installed binary take effect right away.
 
 ### Options
 
@@ -174,7 +176,6 @@ old one, so the daemon is never started twice.
 | `--config FILE` | sway config to edit, default: autodetected |
 | `--retile-key KEY` | Key for `swayling retile`, default `$mod+Shift+t` |
 | `--ratio RATIO` | Pass `--ratio` to the daemon and to `retile` |
-| `--autostart MODE` | `auto` (default), `sway` or `systemd` |
 | `--no-retile` | Don't add a retile binding |
 | `--no-move-binds` | Don't rewrite your `move` bindings |
 | `--skip-build` | Use the existing `target/release/swayling` |
@@ -240,11 +241,10 @@ still running, it reconnects (10 attempts, every 500 ms).
 
 ## Troubleshooting
 
-- **Nothing happens.** Check that the daemon runs: `pgrep -a swayling`, or
-  `systemctl --user status swayling` if the systemd service is used. Start it
-  by hand with `swayling --verbose` to see its decisions. If it reports
-  `cannot connect to sway IPC`, `$SWAYSOCK` is not set in that environment;
-  starting it from the sway config always works.
+- **Nothing happens.** Check that the daemon runs: `pgrep -a swayling`.
+  Start it by hand with `swayling --verbose` to see its decisions. If it
+  reports `cannot connect to sway IPC`, `$SWAYSOCK` is not set in that
+  environment; starting it from the sway config always works.
 - **The daemon is gone after a reload.** Your config has an unquoted
   `exec_always pkill -x swayling; exec ...` line (see
   [Manual install](#manual-install)). Run `./install.sh` again, it fixes the
@@ -258,8 +258,7 @@ still running, it reconnects (10 attempts, every 500 ms).
 - **Conflicts with other autotiling tools.** Don't run swayling together with
   `autotiling`, `autotiling-rs` or similar scripts, since they fight over the
   same split commands.
-- **Logs.** sway sends a program's stderr to its own log; with the systemd
-  service use `journalctl --user -u swayling`.
+- **Logs.** sway sends a program's stderr to its own log.
 
 ## Uninstalling
 
@@ -269,8 +268,8 @@ still running, it reconnects (10 attempts, every 500 ms).
 
 This turns the `swayling move` bindings back into plain `move` bindings,
 removes the managed block (with a backup and validation first), disables and
-deletes the systemd service if the script created one, stops the daemon,
-deletes the binary and reloads sway.
+deletes an old systemd service if an earlier version created one, stops the
+daemon, deletes the binary and reloads sway.
 
 After a manual install, run `cargo uninstall swayling` and remove the
 swayling lines from your sway config.
@@ -289,4 +288,4 @@ cargo clippy --all-targets    # lints
 | `src/tree.rs` | The parts of sway's layout tree swayling parses |
 | `src/dwindle.rs` | Split decision for the focused window |
 | `src/commands.rs` | `move` and `retile` |
-| `install.sh` | Requirements check, build, install, config and autostart setup |
+| `install.sh` | Requirements check, build, install and config setup |

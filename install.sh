@@ -4,8 +4,8 @@
 # What it changes in your config, and nothing else:
 #   * `bindsym ... move left|right|up|down` bindings become
 #     `bindsym ... exec <bin>/swayling move <dir>`
-#   * a marked block at the end binds `retile` and (unless a systemd user
-#     service is used for autostart, see detect_autostart) starts the daemon
+#   * a marked block at the end binds `retile` and starts the daemon with
+#     `exec_always`, so it comes and goes with your sway session
 # A timestamped backup is written first and the result is checked with
 # `sway --validate` before it replaces your config.
 
@@ -27,7 +27,6 @@ dry_run=0
 assume_yes=0
 check_only=0
 uninstall=0
-autostart=auto
 
 usage() {
     cat <<'EOF'
@@ -40,8 +39,6 @@ Options:
   --config FILE       sway config to edit [default: autodetected]
   --retile-key KEY    Key for `swayling retile` [default: $mod+Shift+t]
   --ratio RATIO       Pass --ratio to the daemon and to retile
-  --autostart MODE    How to start the daemon: auto, sway (exec_always in the
-                      sway config) or systemd (user service) [default: auto]
   --no-retile         Don't add a retile binding
   --no-move-binds     Don't rewrite your `move` bindings
   --skip-build        Use the existing target/release/swayling
@@ -67,11 +64,9 @@ while [[ $# -gt 0 ]]; do
         --config) config="${2:?--config needs a value}"; shift ;;
         --retile-key) retile_key="${2:?--retile-key needs a value}"; shift ;;
         --ratio) ratio="${2:?--ratio needs a value}"; shift ;;
-        --autostart) autostart="${2:?--autostart needs a value}"; shift ;;
         --no-retile) do_retile=0 ;;
         --no-move-binds) do_move=0 ;;
         --skip-build) do_build=0 ;;
-        --reload) do_reload=1 ;;
         --no-reload) do_reload=0 ;;
         --dry-run) dry_run=1 ;;
         --uninstall) uninstall=1 ;;
@@ -82,11 +77,6 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
-
-case "$autostart" in
-    auto|sway|systemd) ;;
-    *) die "--autostart must be auto, sway or systemd" ;;
-esac
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bin_dir="${bin_dir%/}"
@@ -286,121 +276,28 @@ config_real="$(readlink -f "$config")"
 [[ -w "$config_real" ]] || die "'$config_real' is not writable (system config? copy it to ~/.config/sway/config first)"
 info "sway config: $config"
 
-# --- Autostart -----------------------------------------------------------------
+# --- Old systemd service ---------------------------------------------------------
 
+# Earlier versions could start the daemon with a systemd user service. It is
+# removed again, so the daemon is never started twice.
 SERVICE_MARKER='# managed by swayling install.sh'
-service_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-service_file="$service_dir/swayling.service"
-
-# Prints "<method> <systemd target> <reason>". A systemd user service is only
-# used when sway runs inside a systemd graphical session (uwsm, sway-systemd,
-# ...) and SWAYSOCK is exported to systemd; otherwise the service would never
-# start or could not find sway. Everything else (ly, greetd, tty, ...) gets
-# `exec_always` in the sway config, which works with any setup.
-detect_autostart() {
-    if ! command -v systemctl >/dev/null; then
-        echo "sway - systemd is not available"
-        return
-    fi
-    case "$(systemctl --user is-system-running 2>/dev/null || true)" in
-        running|degraded|starting) ;;
-        *)
-            echo "sway - no systemd user instance is running"
-            return
-            ;;
-    esac
-    local target
-    for target in sway-session.target graphical-session.target; do
-        if systemctl --user is-active -q "$target" 2>/dev/null; then
-            if ! systemctl --user show-environment 2>/dev/null | grep -q '^SWAYSOCK='; then
-                echo "sway - $target is active, but SWAYSOCK is not exported to systemd"
-                return
-            fi
-            local how="systemd session"
-            if command -v uwsm >/dev/null \
-                && systemctl --user list-units --no-legend 'wayland-wm@*' 2>/dev/null | grep -q .; then
-                how="uwsm session"
-            fi
-            echo "systemd $target sway runs in a $how ($target is active)"
-            return
-        fi
-    done
-    echo "sway - sway is not part of a systemd graphical session (started by a display manager or from a tty)"
-}
-
-read -r detected_method detected_target detected_reason <<<"$(detect_autostart)"
-case "$autostart" in
-    auto)
-        method="$detected_method" target="$detected_target" reason="$detected_reason"
-        ;;
-    sway)
-        method=sway target=- reason="chosen with --autostart sway"
-        ;;
-    systemd)
-        method=systemd target="$detected_target" reason="chosen with --autostart systemd"
-        if [[ "$target" == - ]]; then
-            target=graphical-session.target
-            warn "no active session target detected, using $target; the service only starts once that target is reached"
-        fi
-        ;;
-esac
-if [[ $uninstall -eq 0 ]]; then
-    if [[ "$method" == systemd ]]; then
-        info "autostart: systemd user service (WantedBy=$target), because $reason"
-    else
-        info "autostart: exec_always in the sway config, because $reason"
-    fi
-fi
-
-render_service() {
-    local args=""
-    if [[ -n "$ratio" ]]; then
-        args=" --ratio $ratio"
-    fi
-    cat <<UNIT
-$SERVICE_MARKER
-[Unit]
-Description=swayling - Hyprland-style dwindle tiling for sway
-PartOf=$target
-After=$target
-
-[Service]
-ExecStart=$bin$args
-Restart=on-failure
-RestartSec=1
-
-[Install]
-WantedBy=$target
-UNIT
-}
+service_file="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/swayling.service"
 
 # True if the service file exists and was written by this script.
 have_managed_service() {
     [[ -f "$service_file" ]] && grep -qxF "$SERVICE_MARKER" "$service_file"
 }
 
-install_service() {
-    mkdir -p "$service_dir"
-    render_service >"$service_file"
-    systemctl --user daemon-reload
-    systemctl --user enable -q swayling.service
-    info "installed and enabled $service_file"
-    # Replace an instance started by exec_always or by an older service run.
-    pkill -x swayling 2>/dev/null || true
-    if systemctl --user is-active -q "$target"; then
-        systemctl --user restart swayling.service
-        info "started swayling.service"
-    fi
-}
-
 remove_service() {
     if have_managed_service; then
-        systemctl --user disable -q --now swayling.service 2>/dev/null || true
+        if command -v systemctl >/dev/null; then
+            systemctl --user disable -q --now swayling.service 2>/dev/null || true
+        fi
         rm -f "$service_file"
-        systemctl --user daemon-reload 2>/dev/null || true
-        info "removed $service_file"
-    elif [[ -f "$service_file" ]]; then
-        warn "$service_file exists but was not written by install.sh; leaving it alone"
+        if command -v systemctl >/dev/null; then
+            systemctl --user daemon-reload 2>/dev/null || true
+        fi
+        info "removed the old systemd service $service_file"
     fi
 }
 
@@ -475,11 +372,9 @@ render_install() {
 
     printf '%s\n' "$body"
     printf '\n%s\n' "$BLOCK_BEGIN"
-    if [[ "$method" == sway ]]; then
-        # Quoted, so sway hands the whole line to one shell: without quotes
-        # sway splits at `;`, and the `exec` half would only run at startup.
-        printf 'exec_always "pkill -x swayling; exec %s%s"\n' "$bin" "$args"
-    fi
+    # Quoted, so sway hands the whole line to one shell: without quotes sway
+    # splits at `;`, and the `exec` half would only run at startup.
+    printf 'exec_always "pkill -x swayling; exec %s%s"\n' "$bin" "$args"
     if [[ $add_retile -eq 1 ]]; then
         printf 'bindsym %s exec %s retile%s\n' "$retile_key" "$bin" "$args"
     fi
@@ -522,10 +417,7 @@ if [[ $dry_run -eq 1 ]]; then
     else
         info "config is already up to date"
     fi
-    if [[ $uninstall -eq 0 && "$method" == systemd ]]; then
-        info "would write $service_file:"
-        render_service
-    elif have_managed_service; then
+    if have_managed_service; then
         info "would remove $service_file"
     fi
     exit 0
@@ -591,15 +483,7 @@ else
     info "config is already up to date"
 fi
 
-# --- Autostart setup -------------------------------------------------------------
-
-if [[ $uninstall -eq 0 && "$method" == systemd ]]; then
-    install_service
-else
-    # Switching to exec_always (or uninstalling): drop a service from an
-    # earlier run, so the daemon is never started twice.
-    remove_service
-fi
+remove_service
 
 if [[ $uninstall -eq 1 ]]; then
     pkill -x swayling 2>/dev/null && info "stopped the running daemon" || true
@@ -635,14 +519,12 @@ if sway_running; then
         info "sway reloaded, the new key bindings are active"
     elif [[ $uninstall -eq 0 ]]; then
         info "not reloading: the new key bindings apply after your next reload (\$mod+Shift+c)"
-        if [[ "$method" == sway ]]; then
-            # Start the daemon through sway, so it runs in sway's environment.
-            args=""
-            if [[ -n "$ratio" ]]; then
-                args=" --ratio $ratio"
-            fi
-            swaymsg "exec \"pkill -x swayling; exec $bin$args\"" >/dev/null
+        # Start the daemon through sway, so it runs in sway's environment.
+        args=""
+        if [[ -n "$ratio" ]]; then
+            args=" --ratio $ratio"
         fi
+        swaymsg "exec \"pkill -x swayling; exec $bin$args\"" >/dev/null
     fi
     if [[ $uninstall -eq 0 ]]; then
         if daemon_started; then
