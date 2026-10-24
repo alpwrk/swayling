@@ -1,0 +1,17 @@
+[package]
+name = "swayling"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Hyprland-style dwindle tiling for sway and SwayFX"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
